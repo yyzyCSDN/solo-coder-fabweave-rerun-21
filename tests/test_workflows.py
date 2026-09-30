@@ -20,7 +20,7 @@ from fabweave.genealogy.carrier import GenealogyGraph
 from fabweave.holds.release import HoldState, release_decision
 from fabweave.lot.merge import Lot, merge_lots
 from fabweave.maintenance.window import MaintenancePolicy, assignment_decision
-from fabweave.metrology.sampling import Wafer, deterministic_sample
+from fabweave.metrology.sampling import Wafer, deterministic_sample, sample_indices
 from fabweave.queue_time.enforcer import QueueLimit, queue_time_decision
 from fabweave.recipe.qualification import Qualification, qualification_decision
 from fabweave.reticle.reservation import Reservation, ReservationBook
@@ -299,6 +299,39 @@ def test_sample_evaluation_keeps_selected_membership_with_spc_rules():
 def test_chamber_sample_reports_parameter_and_coverage_failures_together():
     decision = chamber_sample_decision({"p": 10}, {"p": 12}, {"p": Tolerance(absolute=1)}, [Wafer("W", 0, "CENTER")], 1, {"EDGE"})
     assert decision.reasons[0] == "p:outside_tolerance" and decision.reasons[1].startswith("sample:")
+
+
+@pytest.mark.parametrize("lot_size,sample_count", [(5, 3), (7, 3), (10, 3), (10, 6), (6, 4), (13, 5)])
+def test_sparse_sample_covers_both_ends_with_exact_unique_count(lot_size, sample_count):
+    indices = sample_indices(lot_size, sample_count)
+    assert len(indices) == sample_count
+    assert len(set(indices)) == sample_count
+    assert indices == sorted(indices)
+    assert indices[0] == 0 and indices[-1] == lot_size - 1
+
+
+def test_deterministic_sample_deduplicates_repeated_wafer_entries():
+    wafers = [Wafer("W0", 0, "CENTER"), Wafer("W0", 0, "CENTER"), Wafer("W1", 1, "CENTER"), Wafer("W2", 2, "EDGE")]
+    sample = deterministic_sample(wafers, 3, {"CENTER", "EDGE"})
+    ids = [wafer.wafer_id for wafer in sample]
+    assert len(ids) == len(set(ids)) == 3
+
+
+def test_chamber_gate_keeps_tail_and_matches_upstream_sample_list():
+    wafers = [Wafer(f"W{i}", i, "CENTER") for i in range(5)]
+    upstream = tuple(wafer.wafer_id for wafer in deterministic_sample(wafers, 3, set()))
+    assert upstream == ("W0", "W2", "W4")
+    decision = chamber_sample_decision({"p": 10}, {"p": 10}, {"p": Tolerance(absolute=1)}, wafers, 3, set())
+    assert decision.allowed
+    assert decision.evidence["sample_wafer_ids"] == upstream
+    result = evaluate_sample(wafers, 3, set(), {f"W{i}": value for i, value in enumerate([0, 0, 0, 0, 4])}, 0, 1)
+    assert result.wafer_ids == upstream and "one_beyond_3_sigma" in result.rules
+
+
+def test_insufficient_zone_coverage_is_still_rejected_at_gate():
+    decision = chamber_sample_decision({"p": 10}, {"p": 10}, {"p": Tolerance(absolute=1)}, [Wafer("W", 0, "CENTER")], 1, {"EDGE"})
+    assert not decision.allowed and any(reason.startswith("sample:") for reason in decision.reasons)
+
 
 
 def test_environmental_containment_combines_excursion_and_material_risk():

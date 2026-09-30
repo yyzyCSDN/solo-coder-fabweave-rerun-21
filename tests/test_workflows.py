@@ -20,7 +20,7 @@ from fabweave.genealogy.carrier import GenealogyGraph
 from fabweave.holds.release import HoldState, release_decision
 from fabweave.lot.merge import Lot, merge_lots
 from fabweave.maintenance.window import MaintenancePolicy, assignment_decision
-from fabweave.metrology.sampling import Wafer, deterministic_sample
+from fabweave.metrology.sampling import Wafer, deterministic_sample, sample_indices
 from fabweave.queue_time.enforcer import QueueLimit, queue_time_decision
 from fabweave.recipe.qualification import Qualification, qualification_decision
 from fabweave.reticle.reservation import Reservation, ReservationBook
@@ -158,11 +158,37 @@ def test_spc_rules(values, rule):
     assert rule in western_electric_rules(values, 0, 1)
 
 
+def test_sparse_sample_indices_cover_both_ends_without_duplicates():
+    for lot_size in range(2, 21):
+        for sample_count in range(2, lot_size + 1):
+            indices = sample_indices(lot_size, sample_count)
+            assert indices[0] == 0
+            assert indices[-1] == lot_size - 1
+            assert len(indices) == len(set(indices)) == sample_count
+            assert indices == sorted(indices)
+    assert sample_indices(7, 3) == [0, 3, 6]
+
+
 def test_metrology_sample_covers_required_zones_and_is_deterministic():
     wafers = [Wafer(f"W{i}", i, "EDGE" if i in {0, 5} else "CENTER") for i in range(6)]
     first = deterministic_sample(wafers, 3, {"EDGE", "CENTER"})
     assert first == deterministic_sample(list(reversed(wafers)), 3, {"EDGE", "CENTER"})
     assert {wafer.zone for wafer in first} == {"EDGE", "CENTER"}
+
+
+def test_metrology_sample_covers_endpoints_preserves_count_and_deduplicates():
+    wafers = [Wafer("W0", 0, "CENTER"), Wafer("W0", 0, "CENTER"), *(Wafer(f"W{i}", i, "CENTER") for i in range(1, 7))]
+    sample = deterministic_sample(wafers, 5, set())
+    assert [wafer.wafer_id for wafer in sample] == ["W0", "W2", "W3", "W5", "W6"]
+    assert len({wafer.wafer_id for wafer in sample}) == 5
+
+
+def test_metrology_sample_still_rejects_when_coverage_cannot_fit():
+    wafers = [Wafer("EDGE", 0, "EDGE"), Wafer("OTHER", 1, "OTHER"), Wafer("MID", 2, "MID"), Wafer("OTHER", 3, "OTHER"), Wafer("CENTER", 4, "CENTER")]
+    with pytest.raises(ValueError, match="sample count cannot cover required zones and endpoints"):
+        deterministic_sample(wafers, 3, {"EDGE", "MID", "CENTER"})
+    with pytest.raises(ValueError, match="duplicate wafer id"):
+        deterministic_sample([Wafer("DUP", 0, "CENTER"), Wafer("DUP", 1, "EDGE")], 2, set())
 
 
 def test_maintenance_assignment_combines_both_clocks_and_planned_window():
@@ -299,6 +325,13 @@ def test_sample_evaluation_keeps_selected_membership_with_spc_rules():
 def test_chamber_sample_reports_parameter_and_coverage_failures_together():
     decision = chamber_sample_decision({"p": 10}, {"p": 12}, {"p": Tolerance(absolute=1)}, [Wafer("W", 0, "CENTER")], 1, {"EDGE"})
     assert decision.reasons[0] == "p:outside_tolerance" and decision.reasons[1].startswith("sample:")
+
+
+def test_chamber_sample_evidence_uses_the_full_sample_list():
+    wafers = [Wafer(f"W{i}", i, "CENTER") for i in range(5)]
+    decision = chamber_sample_decision({"p": 10}, {"p": 10}, {"p": Tolerance(absolute=1)}, wafers, 3, set())
+    assert decision.allowed
+    assert decision.evidence["sample_wafer_ids"] == ("W0", "W2", "W4")
 
 
 def test_environmental_containment_combines_excursion_and_material_risk():

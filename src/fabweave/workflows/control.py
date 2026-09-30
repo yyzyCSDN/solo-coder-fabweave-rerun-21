@@ -138,8 +138,7 @@ def chamber_sample_decision(
 ) -> Decision:
     reasons = list(mismatch_reasons(reference, candidate, tolerances))
     try:
-        source = wafers[:-1] if not required_zones and len(wafers) > 1 else wafers
-        sample = deterministic_sample(source, sample_count, required_zones)
+        sample = deterministic_sample(wafers, sample_count, required_zones)
     except ValueError as error:
         reasons.append(f"sample:{error}")
         sample = ()
